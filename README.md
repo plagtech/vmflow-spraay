@@ -225,8 +225,22 @@ All 8 seeded sales ($0.13) ended settled across the two confirmed runs.
 
 ### What it cost
 
-$0.02 per `execute` call × 3 calls (one spent on the contract-parse stop below),
-plus $0.00039 in protocol fees and Base gas.
+Operator USDC went `0.46 → 0.31461`, which reconciles exactly:
+
+| | |
+| --- | --- |
+| settlement 1 net (sent 0.09027, received own 0.045 leg) | 0.04527 |
+| settlement 2 net (sent 0.04012, received own 0.020 leg) | 0.02012 |
+| x402 `execute` fees — 4 paid calls at $0.02 | 0.08 |
+| **total** | **0.14539** |
+
+Two of those four calls settled. The other two were paid for responses the
+worker then refused: the contract-parse stop described below, and the nonce
+collision. Both are the strict checks doing their job — a $0.02 fee is the
+price of *not* broadcasting something unverified — but it is worth knowing that
+a cycle which aborts after the execute call still costs the gateway fee.
+
+Base gas and the $0.00039 protocol fee are on top.
 
 ### Two bugs this run caught
 
