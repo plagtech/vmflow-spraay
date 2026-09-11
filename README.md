@@ -276,7 +276,6 @@ Batch [`0x74af3731…0e273186`](https://basescan.org/tx/0x74af37319e6dfade43145f
   stale window, then with `--stale-minutes 0` marked it failed as
   interrupted-before-broadcast. The sales stayed claimed until `retry` released
   them explicitly, and the next cycle settled them cleanly (settlement 2).
-
 - **Non-custodial, demonstrably.** Both batch transactions and both approvals
   were signed by the operator key inside this process and broadcast straight to
   Base. The gateway supplied calldata and never a signature; it held no funds at
