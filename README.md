@@ -6,11 +6,21 @@ The worker reads the operator's own VMflow `sales` table, computes the revenue
 split (operator / location owner / route driver / anyone), and settles each cycle
 as **one Spraay batch transaction on Base**.
 
-**Your keys never leave your box.** The Spraay gateway prices the batch and hands
-back an *unsigned* transaction. This worker signs and broadcasts it locally with
-the operator's own key. Spraay never holds funds, never custodies a key, and
-cannot move money on the operator's behalf. Settlement is in USDC on Base,
+**Your keys never leave your machine.** The gateway's only job is to *encode*:
+it takes the recipient list and prices the batch, and hands back an **unsigned**
+transaction. Nothing else. The operator's key signs that transaction locally, in
+this process, on the operator's own box, and broadcasts it to Base directly.
+
+Spraay never sees a private key, never holds funds, never takes custody, and
+cannot move an operator's money — it has nothing to move it with. The one thing
+it is granted is a bounded ERC-20 allowance, approved at exactly the amount the
+current cycle needs and no more. Settlement is USDC on Base,
 recipient-to-recipient.
+
+This is not a claim to take on faith; it is visible in the verification below.
+Every transfer of value originates from a transaction signed by the operator's
+own key, and the worker refuses outright to report a transaction it did not
+sign — see *The worker stops rather than adapts*.
 
 Nothing upstream is touched: VMflow's schema is untouched, and the worker adds
 exactly one table of its own.
@@ -116,6 +126,46 @@ before an interrupted run is checked against the chain.
 Start with `dry-run`. It performs no payment and makes no network call to the
 gateway, so it is safe against a live database.
 
+Secrets are read from the environment. Keep them in a `.env` outside the repo
+and point Node at it, so a key never lands in the working tree:
+
+```bash
+node --env-file=../.env dist/index.js run
+```
+
+---
+
+## Notes for operators
+
+Three things that will otherwise surprise you.
+
+**`sales.item_price` is a `double precision` column, not a decimal numeric.**
+That is upstream VMflow's choice and this worker is additive, so it does not
+change it. What the worker does instead: it reads each value's *shortest exact
+decimal form* and parses that as text, never multiplying the float. A price
+carrying sub-cent precision — the residue of float arithmetic upstream, say
+`0.1 + 0.2` — is **refused**, and the cycle stops rather than quietly rounding
+somebody's money. If a cycle halts complaining about sub-cent precision, the
+sale row is the thing to look at, not the worker.
+
+**A cycle that aborts after the `execute` call still pays the $0.02 fee.** The
+gateway charges for pricing the batch, and that payment settles before the
+worker has seen a single byte of the response. So every safety stop after that
+point — an unrecognised response shape, a total that does not match, a failed
+broadcast — costs $0.02 and moves no payout money. That is the intended trade:
+$0.02 is the price of *not* broadcasting something unverified. It does mean a
+misconfiguration can burn fees in a loop, so watch for repeated `failed` runs
+rather than letting cron grind.
+
+**The gateway mixes units, and the worker always prefers the raw figure.** Its
+`batch` summary is in human decimals — `"totalAmount": "0.09"`, `"fee":
+"0.00027"` — while `approvalRequired.amount` is in raw base units, `"90270"`.
+Reading the summary as raw would approve a millionth of the intended allowance;
+reading the raw field as decimal would approve a million times it. The worker
+parses each in its own units and uses `approvalRequired.amount` verbatim for
+the approval and the balance check. If you extend this code, keep that
+distinction: it is the single easiest place here to lose money.
+
 ---
 
 ## Verifying the x402 client
@@ -183,12 +233,16 @@ Batch [`0x04312f24…c2ff239b`](https://basescan.org/tx/0x04312f246c5e7aea57a7b8
 (block 51153633, gas 93375) · approval
 [`0xd575d35e…90ea9d98`](https://basescan.org/tx/0xd575d35eb26452fe2e2ca2fcd737e9e7a27803fe0198d4a4f5628b0290ea9d98)
 
-```
-operator -> contract   0.09027   (raw 90270)   payout + fee
-contract -> A          0.045     (raw 45000)
-contract -> B          0.045     (raw 45000)
-contract -> fee sink   0.00027   (raw   270)
-```
+Decoded USDC `Transfer` events, in order:
+
+| from | to | amount | raw | |
+| --- | --- | --- | --- | --- |
+| operator | batch contract | 0.09027 | 90270 | payout + fee |
+| batch contract | A | **0.045** | 45000 | 5000 bps |
+| batch contract | B (operator) | **0.045** | 45000 | 5000 bps |
+| batch contract | fee sink | 0.00027 | 270 | **0.3%** exactly |
+
+`45000 + 45000 + 270 = 90270` — the batch reconciles to the unit.
 
 ### Settlement 2 — 3 sales, $0.04 (the post-crash run)
 
@@ -196,12 +250,14 @@ Batch [`0x74af3731…0e273186`](https://basescan.org/tx/0x74af37319e6dfade43145f
 (block 51153799, gas 93375) · approval
 [`0x67683132…33a41f21`](https://basescan.org/tx/0x676831327c14d7d9cede5cf972cd7aa0adbefd3b51adc2ded108c33f33a41f21)
 
-```
-operator -> contract   0.04012   (raw 40120)
-contract -> A          0.02      (raw 20000)
-contract -> B          0.02      (raw 20000)
-contract -> fee sink   0.00012   (raw   120)
-```
+| from | to | amount | raw | |
+| --- | --- | --- | --- | --- |
+| operator | batch contract | 0.04012 | 40120 | payout + fee |
+| batch contract | A | **0.02** | 20000 | 5000 bps |
+| batch contract | B (operator) | **0.02** | 20000 | 5000 bps |
+| batch contract | fee sink | 0.00012 | 120 | **0.3%** exactly |
+
+`20000 + 20000 + 120 = 40120`.
 
 ### What this proves
 
@@ -220,6 +276,12 @@ contract -> fee sink   0.00012   (raw   120)
   stale window, then with `--stale-minutes 0` marked it failed as
   interrupted-before-broadcast. The sales stayed claimed until `retry` released
   them explicitly, and the next cycle settled them cleanly (settlement 2).
+
+- **Non-custodial, demonstrably.** Both batch transactions and both approvals
+  were signed by the operator key inside this process and broadcast straight to
+  Base. The gateway supplied calldata and never a signature; it held no funds at
+  any point and its allowance was capped at the cycle amount. Nothing in either
+  settlement could have happened without the operator's own key.
 
 All 8 seeded sales ($0.13) ended settled across the two confirmed runs.
 
