@@ -1,0 +1,31 @@
+{
+  "name": "vmflow-spraay",
+  "version": "0.1.0",
+  "private": true,
+  "description": "VMflow operator payout worker — turns machine revenue into multi-party Spraay batch settlement on Base.",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "bin": {
+    "vmflow-spraay": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/index.js",
+    "dev": "tsx src/index.ts",
+    "test": "node --test --import tsx test/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "2.58.0",
+    "@x402/evm": "2.25.0",
+    "@x402/fetch": "2.25.0",
+    "ethers": "6.17.0"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.2",
+    "tsx": "4.19.2",
+    "typescript": "5.7.2"
+  }
+}

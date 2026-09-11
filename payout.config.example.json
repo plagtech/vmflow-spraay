@@ -1,0 +1,28 @@
+{
+  "supabase": {
+    "url": "http://localhost:8000",
+    "serviceRoleKeyEnv": "SUPABASE_SERVICE_ROLE_KEY"
+  },
+  "operator": {
+    "privateKeyEnv": "OPERATOR_PRIVATE_KEY",
+    "rpcUrlEnv": "BASE_RPC_URL"
+  },
+  "splits": [
+    {
+      "label": "location-owner",
+      "wallet": "env:PAYOUT_RECIPIENT_2",
+      "bps": 5000
+    },
+    {
+      "label": "operator",
+      "wallet": "operator",
+      "bps": 5000
+    }
+  ],
+  "schedule": {
+    "cron": "0 * * * *",
+    "minPayoutUsd": "0.01"
+  },
+  "gatewayUrl": "https://gateway.spraay.app",
+  "preflightEstimate": false
+}
