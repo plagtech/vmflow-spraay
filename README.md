@@ -343,4 +343,4 @@ npm run typecheck
 
 ## Licence
 
-TBD before the repo goes public.
+MIT — see [LICENSE](LICENSE).

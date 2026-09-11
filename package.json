@@ -2,6 +2,7 @@
   "name": "vmflow-spraay",
   "version": "0.1.0",
   "private": true,
+  "license": "MIT",
   "description": "VMflow operator payout worker — turns machine revenue into multi-party Spraay batch settlement on Base.",
   "type": "module",
   "engines": {
