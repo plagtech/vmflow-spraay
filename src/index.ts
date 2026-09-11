@@ -13,7 +13,7 @@ import { connectChain } from "./chain.js";
 import { loadConfig, operatorPrivateKeyFromEnv } from "./config.js";
 import { connectDb, liveRuns, releaseFailedRun } from "./db.js";
 import { runCycle } from "./cycle.js";
-import { recover } from "./recovery.js";
+import { recover, DEFAULT_STALE_MINUTES } from "./recovery.js";
 import { formatUsdc } from "./money.js";
 import { log } from "./log.js";
 
@@ -25,6 +25,12 @@ function arg(name: string, fallback?: string): string | undefined {
 async function main(): Promise<number> {
   const command = process.argv[2] ?? "run";
   const configPath = arg("config", "payout.config.json")!;
+  // An operator who already knows a run is dead should not wait out the default
+  // window to have it checked against the chain.
+  const staleMinutes = Number(arg("stale-minutes", String(DEFAULT_STALE_MINUTES)));
+  if (!Number.isFinite(staleMinutes) || staleMinutes < 0) {
+    throw new Error("--stale-minutes must be a non-negative number");
+  }
 
   // The operator key is read first: split rules may say "operator", which only
   // resolves once we know the address that key controls.
@@ -43,7 +49,7 @@ async function main(): Promise<number> {
 
   switch (command) {
     case "run": {
-      const outcomes = await recover(db, chain);
+      const outcomes = await recover(db, chain, staleMinutes);
       for (const outcome of outcomes) log.info(`recovery: ${outcome.runId} ${outcome.action} — ${outcome.detail}`);
       if (outcomes.some((outcome) => outcome.action === "needs-attention")) {
         log.error("a run needs manual attention; not starting a new cycle");
@@ -70,7 +76,7 @@ async function main(): Promise<number> {
     }
 
     case "recover": {
-      const outcomes = await recover(db, chain);
+      const outcomes = await recover(db, chain, staleMinutes);
       if (outcomes.length === 0) log.info("no interrupted runs");
       for (const outcome of outcomes) log.info(`${outcome.runId} ${outcome.action} — ${outcome.detail}`);
       return outcomes.some((outcome) => outcome.action === "needs-attention") ? 2 : 0;
@@ -100,9 +106,16 @@ async function main(): Promise<number> {
   }
 }
 
+// Set exitCode and let the loop drain rather than calling process.exit():
+// exiting while the Supabase client's sockets are mid-close aborts the process
+// on Windows (libuv UV_HANDLE_CLOSING assertion), turning a clean run into a
+// non-zero exit. A worker that reports failure after settling successfully is
+// how an operator gets talked into a double-paying retry.
 main()
-  .then((code) => process.exit(code))
+  .then((code) => {
+    process.exitCode = code;
+  })
   .catch((error: unknown) => {
     log.error((error as Error).message);
-    process.exit(1);
+    process.exitCode = 1;
   });

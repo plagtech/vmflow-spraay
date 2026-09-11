@@ -18,6 +18,7 @@ import {
 import {
   assertBatchMatches,
   estimateBatch,
+  totalWithFeeRaw,
   executeBatch,
   makePayingFetch,
   type BatchRequest,
@@ -151,7 +152,7 @@ async function settleRun(
   );
 
   // Balance check before spending gas on an approval that cannot settle.
-  const needed = BigInt(response.batch.totalWithFee);
+  const needed = totalWithFeeRaw(response);
   const balance = await usdcBalance(chain, BASE_USDC);
   if (balance < needed) {
     throw new Error(
@@ -161,6 +162,7 @@ async function settleRun(
   }
 
   // 6. Allowance — approve the gateway's fee-inclusive figure verbatim.
+  let approvalNonce: number | undefined;
   if (response.approvalRequired) {
     const { spender, amount, token } = response.approvalRequired;
     const required = BigInt(amount);
@@ -168,15 +170,20 @@ async function settleRun(
 
     if (existing < required) {
       log.info(`allowance ${existing} < ${required}; approving exactly ${required} to ${spender}`);
-      const receipt = await approveExact(chain, token, spender, required);
-      log.info(`approve confirmed in ${receipt.hash}`);
+      const approval = await approveExact(chain, token, spender, required);
+      approvalNonce = approval.nonce;
+      log.info(`approve confirmed in ${approval.receipt.hash} (nonce ${approval.nonce})`);
     } else {
       log.info(`allowance ${existing} already covers ${required}; no approval needed`);
     }
   }
 
   // 7. Sign + broadcast verbatim, then record the hash IMMEDIATELY.
-  const txHash = await broadcastVerbatim(chain, response.transaction);
+  const txHash = await broadcastVerbatim(
+    chain,
+    response.transaction,
+    approvalNonce === undefined ? undefined : approvalNonce + 1,
+  );
   await markBroadcast(db, runId, txHash);
   log.info(`run ${runId} broadcast: ${txHash}`);
 

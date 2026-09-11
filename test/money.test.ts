@@ -1,6 +1,12 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { centsToRaw, dollarsToCents, formatUsdc, usdThresholdToRaw } from "../src/money.js";
+import {
+  centsToRaw,
+  dollarsToCents,
+  formatUsdc,
+  usdThresholdToRaw,
+  usdcDecimalToRaw,
+} from "../src/money.js";
 
 test("parses decimal dollar text into exact cents", () => {
   assert.equal(dollarsToCents("0.31"), 31n);
@@ -45,4 +51,26 @@ test("formats raw units back to a readable string", () => {
 test("threshold parses from config", () => {
   assert.equal(usdThresholdToRaw("0.01"), 10_000n);
   assert.equal(usdThresholdToRaw(0.05), 50_000n);
+});
+
+test("parses gateway decimal amounts into raw units exactly", () => {
+  // Real values from a paid /batch/execute call. Note the 5-decimal fee: this
+  // is why the gateway summary needs its own parser and not dollarsToCents.
+  assert.equal(usdcDecimalToRaw("0.09"), 90_000n);
+  assert.equal(usdcDecimalToRaw("0.00027"), 270n);
+  assert.equal(usdcDecimalToRaw("0.09027"), 90_270n);
+  assert.equal(usdcDecimalToRaw("1"), 1_000_000n);
+  assert.equal(usdcDecimalToRaw("0.000001"), 1n);
+});
+
+test("the units trap: a decimal summary must never be read as raw", () => {
+  // "0.09" parsed as if it were raw base units is the bug that would approve a
+  // millionth of the intended allowance; BigInt() on it throws instead.
+  assert.throws(() => BigInt("0.09"));
+  assert.equal(usdcDecimalToRaw("0.09"), 90_000n);
+});
+
+test("refuses precision USDC cannot hold", () => {
+  assert.throws(() => usdcDecimalToRaw("0.0000001"), /more precision/);
+  assert.throws(() => usdcDecimalToRaw("abc"), /not a USDC decimal/);
 });

@@ -62,14 +62,14 @@ export async function approveExact(
   token: string,
   spender: string,
   amount: bigint,
-): Promise<TransactionReceipt> {
+): Promise<{ receipt: TransactionReceipt; nonce: number }> {
   const erc20 = new Contract(token, ERC20_ABI, chain.wallet);
   const tx = await erc20["approve"]!(spender, amount);
   const receipt = await tx.wait();
   if (!receipt || receipt.status !== 1) {
     throw new Error(`approve(${spender}, ${amount}) reverted (tx ${tx.hash})`);
   }
-  return receipt as TransactionReceipt;
+  return { receipt: receipt as TransactionReceipt, nonce: tx.nonce as number };
 }
 
 /**
@@ -77,8 +77,17 @@ export async function approveExact(
  * exactly as given. Only nonce, fees and chainId are ours to fill in. Rewriting
  * any of the gateway's fields would mean broadcasting a batch it never priced.
  */
-export async function broadcastVerbatim(chain: Chain, tx: UnsignedBatchTx): Promise<string> {
-  const nonce = await chain.provider.getTransactionCount(chain.address, "pending");
+export async function broadcastVerbatim(
+  chain: Chain,
+  tx: UnsignedBatchTx,
+  minNonce?: number,
+): Promise<string> {
+  // `pending` can still report the nonce the approval just consumed: the
+  // receipt is in hand before the node's pending count catches up, and sending
+  // the batch on that nonce is rejected REPLACEMENT_UNDERPRICED (observed on
+  // Base). When an approval preceded us, never go below its nonce + 1.
+  const pending = await chain.provider.getTransactionCount(chain.address, "pending");
+  const nonce = minNonce === undefined ? pending : Math.max(pending, minNonce);
   const fees = await chain.provider.getFeeData();
 
   const sent = await chain.wallet.sendTransaction({

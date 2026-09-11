@@ -37,17 +37,24 @@ exactly one table of its own.
 
 ### Money never touches a float
 
-`sales.item_price` is a decimal dollar numeric. The worker parses the **decimal
-text** into integer cents and then into raw 6dp USDC units with BigInt
-throughout. `0.31 * 100 === 31.000000000000004` is precisely the bug this avoids,
-and it is covered by tests.
+The worker parses **decimal text** into integer cents and then into raw 6dp USDC
+units with BigInt throughout. `0.31 * 100 === 31.000000000000004` is precisely
+the bug this avoids, and it is covered by tests.
+
+Note that upstream `sales.item_price` is a `double precision` column, not a
+decimal numeric. The worker reads each value's shortest exact decimal form and
+refuses anything carrying sub-cent precision rather than silently rounding
+someone's money. The float column is a pre-existing upstream property; this
+worker is additive and does not change it.
 
 ### Failed runs do not auto-release
 
 A `failed` run keeps its sales claimed until an operator runs `retry <id>`
-explicitly. Automatically releasing them is how a worker double-pays a batch that
-actually landed but whose receipt was missed. If a failed run has a `tx_hash`,
-`retry` refuses outright until a human confirms on-chain that it never landed.
+explicitly. "Failed" means the worker could not prove the batch settled — not
+that it proved the batch did not. A receipt timeout can still land minutes
+later, and re-selecting those sales would pay them twice. If a failed run has a
+`tx_hash`, `retry` refuses outright until a human confirms on-chain that it
+never landed.
 
 ---
 
@@ -103,6 +110,9 @@ vmflow-spraay retry <id>   # release a failed run's sales back to unsettled
 vmflow-spraay status       # show pending / broadcast runs
 ```
 
+`recover` and `run` accept `--stale-minutes N` to override the 10-minute window
+before an interrupted run is checked against the chain.
+
 Start with `dry-run`. It performs no payment and makes no network call to the
 gateway, so it is safe against a live database.
 
@@ -119,13 +129,13 @@ The gateway speaks **x402 protocol v2** with CAIP-2 network ids
 | `@x402/fetch@2.25.0` + `@x402/evm@2.25.0` (scoped) | **works** — parses the v2 402, signs an EIP-3009 authorization, retries with `X-PAYMENT`. |
 
 So the worker pins the scoped v2 packages. An ethers `Wallet` is adapted to the
-viem-shaped `ClientEvmSigner` the EVM scheme expects (see
-`toClientEvmSigner` in `src/gateway.ts`).
+viem-shaped `ClientEvmSigner` the EVM scheme expects (see `toClientEvmSigner` in
+`src/gateway.ts`).
 
-This was verified against the live gateway with a throwaway **unfunded** key: the
-client got all the way to settlement and failed only on funds
-(`invalid_payload: … execution reverted`), which is the correct outcome for a
-wallet holding no USDC. No money was spent to establish it.
+This was first verified with a throwaway **unfunded** key: the client got all the
+way to settlement and failed only on funds (`invalid_payload: … execution
+reverted`), which is the correct outcome for a wallet holding no USDC. No money
+was spent to establish it.
 
 ### One paid call per cycle
 
@@ -136,44 +146,123 @@ settlement; that payer's next call within the window is refused as a duplicate.
 
 Estimating immediately before executing is exactly that pattern. So
 `preflightEstimate` defaults to **false** and a cycle makes exactly one paid call
-— the `execute` that actually moves the money. Turn it on only once the dedupe
-window is understood against a funded wallet.
+— the `execute` that actually moves the money.
 
 ### The worker stops rather than adapts
 
 `parseExecute` validates the execute response against the verified contract and
 refuses anything else. In particular, a response carrying a broadcast
 `transactions[]` array (with hashes) instead of one unsigned `transaction` is a
-**hard stop**: that would mean the gateway broadcast on the operator's behalf,
-a different trust model than this worker implements, and the worker will not
-report a transaction it did not sign as its own.
+**hard stop**: that would mean the gateway broadcast on the operator's behalf, a
+different trust model than this worker implements, and the worker will not report
+a transaction it did not sign as its own.
 
-The gateway's own x402 discovery metadata currently advertises that broadcast
-shape as its example response, while the verified paid contract returns an
-unsigned transaction. Until a funded call settles the question, the strict parse
-is what keeps the two apart.
+The gateway's x402 discovery metadata advertises that broadcast shape as its
+example response; it is a stale docstring. Every paid call observed returns an
+unsigned transaction, which is the real contract.
 
 ---
 
-## Verification status
+## Verified end-to-end (real money, Base mainnet)
 
-Unit tests cover the money and split math and the gateway contract parse:
+Run against a local VMflow stack (the `docker/` compose from
+mdb-esp32-cashless) with a funded operator wallet. Every figure below was read
+back from the on-chain transaction logs, not from the worker's own output.
 
-```bash
-npm test        # 22 tests
-npm run typecheck
+**Split under test** — recipient A is `PAYOUT_RECIPIENT_2`, recipient B is the
+operator wallet itself, 50/50:
+
+| role | address | share |
+| --- | --- | --- |
+| A `location-owner` | `0x85E4d5A1F42F6da2c6f12994a089E7aAA14079a2` | 5000 bps |
+| B `operator` | `0x302B44f3ABbc8180d49f9dB7b0217880f912A29D` | 5000 bps |
+
+### Settlement 1 — 5 sales, $0.09
+
+Batch [`0x04312f24…c2ff239b`](https://basescan.org/tx/0x04312f246c5e7aea57a7b8e620dd6adf2a626b269ee8acbe51062493c2ff239b)
+(block 51153633, gas 93375) · approval
+[`0xd575d35e…90ea9d98`](https://basescan.org/tx/0xd575d35eb26452fe2e2ca2fcd737e9e7a27803fe0198d4a4f5628b0290ea9d98)
+
+```
+operator -> contract   0.09027   (raw 90270)   payout + fee
+contract -> A          0.045     (raw 45000)
+contract -> B          0.045     (raw 45000)
+contract -> fee sink   0.00027   (raw   270)
 ```
 
-The end-to-end run against a live stack with real money is **not yet done** and
-is gated on review. It needs a funded Base wallet and will produce:
+### Settlement 2 — 3 sales, $0.04 (the post-crash run)
 
-- [ ] Local VMflow stack, 3 seeded sales totalling ~$0.05 on one operator
-- [ ] Two-way split, threshold $0.01
-- [ ] Real `$0.02` execute fee, real approval, real batch broadcast on Base
-- [ ] Proof transaction hashes, recorded here
-- [ ] Recipients received exact split amounts; contract fee 0.3% on-chain
-- [ ] Re-running immediately settles nothing (idempotency proof)
-- [ ] `kill -9` between claim and broadcast, restart, clean recovery
+Batch [`0x74af3731…0e273186`](https://basescan.org/tx/0x74af37319e6dfade43145fb1f4fc566476240b98c769ecf002504b120e273186)
+(block 51153799, gas 93375) · approval
+[`0x67683132…33a41f21`](https://basescan.org/tx/0x676831327c14d7d9cede5cf972cd7aa0adbefd3b51adc2ded108c33f33a41f21)
+
+```
+operator -> contract   0.04012   (raw 40120)
+contract -> A          0.02      (raw 20000)
+contract -> B          0.02      (raw 20000)
+contract -> fee sink   0.00012   (raw   120)
+```
+
+### What this proves
+
+- **Exact split amounts.** Recipient A's balance moved `0.29 → 0.335 → 0.355`:
+  exactly +0.045 and +0.020, to the base unit. Parts sum to the total; no dust
+  stranded, none over-paid.
+- **Contract fee is 0.3% on-chain.** `270/90000` and `120/40000`, both exactly
+  0.003 — matching the `feePercent` the gateway quoted.
+- **Bounded approvals.** Each cycle approved exactly the gateway's fee-inclusive
+  figure (90270, then 40120). Never an infinite allowance.
+- **Idempotency.** Re-running immediately reports `no unsettled sales` and
+  settles nothing — operator USDC and ETH balances unchanged to the wei.
+- **Crash recovery.** `kill -9` between the claim (step 4) and the broadcast
+  (step 7) left the run `pending`, its sales claimed, no `tx_hash` — and those
+  sales were *not* re-selectable. `recover` left the fresh run alone inside the
+  stale window, then with `--stale-minutes 0` marked it failed as
+  interrupted-before-broadcast. The sales stayed claimed until `retry` released
+  them explicitly, and the next cycle settled them cleanly (settlement 2).
+
+All 8 seeded sales ($0.13) ended settled across the two confirmed runs.
+
+### What it cost
+
+$0.02 per `execute` call × 3 calls (one spent on the contract-parse stop below),
+plus $0.00039 in protocol fees and Base gas.
+
+### Two bugs this run caught
+
+- **Failed runs auto-released their sales.** `claimedSaleIds` omitted `failed`,
+  so a run that could not prove its batch settled would have had its sales
+  re-selected by the next cycle — a double-pay path, and the exact thing the
+  retry-only rule exists to prevent. The code comment asserted the opposite of
+  what the query did. Fixed, with a regression test.
+- **Nonce race between approval and batch.** `getTransactionCount(…, "pending")`
+  can still report the nonce the approval just consumed, and the batch send is
+  then rejected `REPLACEMENT_UNDERPRICED` (observed once on Base). The batch now
+  never goes below the approval's nonce + 1.
+
+A third was caught before any money moved: on Windows, calling `process.exit()`
+while the Supabase client's sockets were closing aborted the process, so a
+*successful* cycle exited non-zero — which under cron reads as a failed payout
+and invites a double-paying retry.
+
+### One contract correction
+
+The gateway's `batch` summary is in **human decimals** (`"totalAmount": "0.09"`,
+`"fee": "0.00027"`), while `approvalRequired.amount` is in **raw base units**
+(`"90270"`). Mixing those up would approve a millionth of the intended
+allowance. The worker parses each in its own units and prefers the raw field for
+the balance check. This cost one $0.02 call to discover: the strict parser
+rejected the response and stopped the cycle before broadcasting, which is the
+designed behaviour.
+
+---
+
+## Tests
+
+```bash
+npm test        # 28 tests
+npm run typecheck
+```
 
 ---
 

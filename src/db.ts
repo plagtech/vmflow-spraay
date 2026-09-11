@@ -48,17 +48,21 @@ export function connectDb(url: string, serviceRoleKey: string): SupabaseClient {
 }
 
 /**
- * Sale ids already spoken for by a run that is pending, broadcast or confirmed.
+ * Sale ids already spoken for by ANY run that still holds them — including
+ * `failed` ones.
  *
- * `failed` runs are deliberately NOT included: their sales stay claimed until an
- * operator runs `retry` explicitly. Auto-releasing them is how a worker
- * double-pays a batch that actually landed but whose receipt we missed.
+ * A failed run keeps its claim on purpose. "Failed" here means the worker could
+ * not prove the batch settled, which is not the same as proving it did not: a
+ * receipt timeout at step 8 leaves a transaction that may still land minutes
+ * later. Releasing those sales automatically is precisely how the next cycle
+ * pays them a second time. The only way out is `retry`, which clears the run's
+ * sale_ids after a human has checked the chain.
  */
 export async function claimedSaleIds(db: SupabaseClient): Promise<Set<string>> {
   const { data, error } = await db
     .from("spraay_payout_runs")
     .select("sale_ids")
-    .in("status", ["pending", "broadcast", "confirmed"]);
+    .in("status", ["pending", "broadcast", "confirmed", "failed"]);
 
   if (error) throw new Error(`reading spraay_payout_runs: ${error.message}`);
 

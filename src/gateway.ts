@@ -15,6 +15,7 @@
 
 import type { Wallet } from "ethers";
 import { BASE_CHAIN_ID } from "./config.js";
+import { usdcDecimalToRaw } from "./money.js";
 
 export interface BatchRequest {
   readonly token: "USDC";
@@ -280,14 +281,21 @@ export function parseExecute(body: unknown): ExecuteResponse {
 /**
  * The batch the gateway priced must be the batch we computed. A mismatch means
  * the request was altered in flight or the gateway reinterpreted our amounts.
+ *
+ * Note the unit split, confirmed against the live gateway: the `batch` summary
+ * is in human decimals ("0.09"), while `approvalRequired.amount` is raw
+ * ("90270"). Mixing the two up silently would approve a millionth of the
+ * intended allowance — or a million times it.
  */
 export function assertBatchMatches(response: ExecuteResponse, expectedTotalRaw: bigint): void {
   let quoted: bigint;
   try {
-    quoted = BigInt(response.batch.totalAmount);
-  } catch {
+    quoted = usdcDecimalToRaw(response.batch.totalAmount);
+  } catch (error) {
     throw new GatewayContractError(
-      "batch.totalAmount is not an integer: " + response.batch.totalAmount,
+      "batch.totalAmount is not a USDC decimal amount: " +
+        response.batch.totalAmount +
+        " (" + (error as Error).message + ")",
       response.raw,
     );
   }
@@ -297,4 +305,14 @@ export function assertBatchMatches(response: ExecuteResponse, expectedTotalRaw: 
       response.raw,
     );
   }
+}
+
+/**
+ * Raw base units the operator must have on hand: payout + gateway fee.
+ * Prefers `approvalRequired.amount`, which the gateway already gives in raw
+ * units, and falls back to parsing the decimal summary.
+ */
+export function totalWithFeeRaw(response: ExecuteResponse): bigint {
+  if (response.approvalRequired) return BigInt(response.approvalRequired.amount);
+  return usdcDecimalToRaw(response.batch.totalWithFee);
 }

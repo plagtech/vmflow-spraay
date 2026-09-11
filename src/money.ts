@@ -71,3 +71,27 @@ export function formatUsdc(raw: bigint): string {
 export function usdThresholdToRaw(value: string | number): bigint {
   return centsToRaw(dollarsToCents(value));
 }
+
+/**
+ * Parse a USDC decimal string into raw base units, exactly.
+ *
+ * The gateway reports its batch summary in human decimals ("0.09", "0.00027",
+ * "0.09027") rather than base units — unlike `approvalRequired.amount`, which
+ * is raw. Sub-cent precision is legitimate here (a 0.3% fee on dust), so this
+ * accepts up to USDC's full 6 decimal places, where `dollarsToCents` stops at
+ * 2. Still no float math: the text is parsed digit-wise.
+ */
+export function usdcDecimalToRaw(value: string): bigint {
+  const text = String(value).trim();
+  if (!/^\d+(\.\d+)?$/.test(text)) {
+    throw new Error(`not a USDC decimal amount: ${JSON.stringify(value)}`);
+  }
+
+  const [whole = "0", fraction = ""] = text.split(".");
+  if (fraction.length > USDC_DECIMALS) {
+    throw new Error(
+      `${JSON.stringify(value)} has more precision than USDC's ${USDC_DECIMALS} decimals`,
+    );
+  }
+  return BigInt(whole + fraction.padEnd(USDC_DECIMALS, "0"));
+}

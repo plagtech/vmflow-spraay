@@ -10,16 +10,20 @@ const valid = {
     chainId: 8453,
     gasLimit: "0x2d2d0",
   },
+  // Verbatim from a real paid /batch/execute call (run 36afaffa, 2026-09-11):
+  // the batch summary is in human DECIMALS, approvalRequired.amount is RAW.
   batch: {
-    totalAmount: "50000",
-    fee: "150",
+    recipientCount: 2,
+    totalAmount: "0.09",
+    fee: "0.00027",
     feePercent: "0.3%",
-    totalWithFee: "50150",
+    totalWithFee: "0.09027",
   },
   approvalRequired: {
     token: "0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
     spender: "0x5555555555555555555555555555555555555555",
-    amount: "50150",
+    amount: "90270",
+    amountFormatted: "0.09027",
   },
 };
 
@@ -27,8 +31,8 @@ test("parses the verified contract shape", () => {
   const parsed = parseExecute(valid);
   assert.equal(parsed.transaction.to, valid.transaction.to);
   assert.equal(parsed.transaction.chainId, 8453);
-  assert.equal(parsed.batch.totalWithFee, "50150");
-  assert.equal(parsed.approvalRequired?.amount, "50150");
+  assert.equal(parsed.batch.totalWithFee, "0.09027");
+  assert.equal(parsed.approvalRequired?.amount, "90270");
 });
 
 test("approvalRequired is optional", () => {
@@ -64,6 +68,6 @@ test("HARD STOP: a partial approvalRequired is refused", () => {
 
 test("the gateway's quoted total must equal the cycle's own total", () => {
   const parsed = parseExecute(valid);
-  assert.doesNotThrow(() => assertBatchMatches(parsed, 50_000n));
-  assert.throws(() => assertBatchMatches(parsed, 49_999n), /priced 50000 .* computed 49999/);
+  assert.doesNotThrow(() => assertBatchMatches(parsed, 90_000n));
+  assert.throws(() => assertBatchMatches(parsed, 89_999n), /priced 90000 .* computed 89999/);
 });
